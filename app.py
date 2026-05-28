@@ -1,432 +1,486 @@
 import streamlit as st
-import datetime
 import requests
-import urllib.parse
+import datetime
 import pandas as pd
+import math
+import json
 import re
+import time
+
+# ==========================================
+# CONFIGURATION & DATABASE LINK
+# ==========================================
+URL_GOOGLE_SHEET = "https://script.google.com/macros/s/AKfycbzSEatbLRT_wZBlz1etpJHNi-vRzqN-cnNnOtBw2JYAOPWNzKIIhB5T1pEiLx1kc_L4/exec"
 
 st.set_page_config(page_title="CRM Hejja Pro", page_icon="🚀", layout="wide")
 
-# 🔴 URL Web App Apps Script
-URL_GOOGLE_SHEET = "https://script.google.com/macros/s/AKfycbx59Pa9kqwmlwHDyJSIebIrwAKUvnyCy-ABDUfhFNvptavicpD000QP6bOLcDyqi-Lh/exec"
+# ==========================================
+# 🛡️ PINTASAN KESELAMATAN JSON (ANTI-CRASH)
+# ==========================================
+def tukar_ke_json_selamat(teks_mentah):
+    try:
+        teks_bersih = re.sub(r'\b(nan|NaN|inf|-inf)\b', 'null', teks_mentah)
+        return json.loads(teks_bersih)
+    except Exception as e:
+        st.error(f"⚠️ Kegagalan kritikal semasa dekod data: {str(e)}")
+        return []
 
-SENARAI_SKU_DROPDOWN = [
-    "Hegula+ Travel Pack",
-    "Hegula+ 1 Pouch",
-    "Hegula+ 2 Pouch",
-    "Hegula+ 4 Pouch",
-    "Hecafe+ 1 Pouch",
-    "Hecafe+ 3 Pouch",
-    "Hegrano 1 Pouch",
-    "Hegrano 3 Pouch"
-]
+def bersihkan_untuk_json(obj):
+    if isinstance(obj, dict):
+        return {str(k): bersihkan_untuk_json(v) for k, v in obj.items()}
+    elif isinstance(obj, list):
+        return [bersihkan_untuk_json(x) for x in obj]
+    elif pd.isna(obj):
+        return ""
+    elif isinstance(obj, float):
+        if math.isnan(obj) or math.isinf(obj):
+            return 0.0
+        return obj
+    else:
+        val_str = str(obj).strip()
+        if val_str.lower() in ['nan', 'null', 'none', 'nat', 'undefined']:
+            return ""
+        return obj
 
-# 👥 DATABASE LOGIN STAFF SALES
+def dapatkan_config_produk(sku):
+    sku_clean = str(sku).strip().lower()
+    if "hegula" in sku_clean:
+        if "3" in sku_clean: return {"hari": 270, "panggilan": "Masa untuk repeat order 3 Pouches Hegula!"}
+        return {"hari": 90, "panggilan": "Masa untuk repeat order 1 Pouch Hegula!"}
+    elif "hegrano" in sku_clean:
+        return {"hari": 30, "panggilan": "Stok Hegrano sebulan dah nak habis, jom follow-up!"}
+    elif "coffee" in sku_clean or "kopi" in sku_clean:
+        return {"hari": 14, "panggilan": "Kopi Hejja dah seminggu lebih, jom ajak repeat order!"}
+    return {"hari": 60, "panggilan": "Produk Hejja Pro dah matang, masa untuk bertanya khabar!"}
+
+def proses_data_crm():
+    try:
+        respon_data = requests.get(f"{URL_GOOGLE_SHEET}?action=ambil_sales")
+        if respon_data.status_code != 200:
+            return None, None, "Gagal berhubung dengan database server Google."
+        
+        senarai_customer = tukar_ke_json_selamat(respon_data.text)
+        if not senarai_customer:
+            return [], [], None
+            
+        hari_ini = datetime.date.today()
+        senarai_lead_baru = []
+        pemetaan_pembelian_terkini = {}
+        
+        for cust_raw in senarai_customer:
+            if not cust_raw: continue
+            cust_cleaned = {}
+            for k, v in cust_raw.items():
+                key_clean = str(k).lower().replace(" ", "").strip()
+                val_clean = "" if v is None else str(v).strip()
+                if val_clean.lower() in ["nan", "null", "undefined", "nat", "none"]:
+                    val_clean = ""
+                cust_cleaned[key_clean] = val_clean
+            
+            tarikh_val = cust_cleaned.get('tarikh') or cust_cleaned.get('tarikhbeli') or ''
+            status_val = cust_cleaned.get('status', '').lower()
+            sku_val = cust_cleaned.get('sku') or cust_cleaned.get('produk') or ''
+            telefon_val = cust_cleaned.get('telefon', '').replace(".0", "").replace("+", "").replace("-", "").strip()
+            nama_val = cust_cleaned.get('nama') or cust_cleaned.get('namapelangan') or ''
+            if not nama_val or nama_val.lower() == 'nan': nama_val = 'Pelanggan'
+            
+            pic_val = cust_cleaned.get('pic') or '-'
+            alamat_val = cust_cleaned.get('alamat') or 'Tiada Alamat'
+            
+            if not status_val or not telefon_val or telefon_val.lower() == 'nan' or telefon_val == "": 
+                continue
+            
+            if "lead" in status_val:
+                senarai_lead_baru.append({
+                    'nama': nama_val, 'sku': sku_val, 'pic': pic_val, 
+                    'tarikh': tarikh_val.split('T')[0], 'telefon': telefon_val, 'alamat': alamat_val,
+                    'jenis_fu': 'Lead Baru (Belum Close)', '_raw': cust_raw
+                })
+            
+            elif "selesai" in status_val or "paid" in status_val or "follow" in status_val:
+                if not tarikh_val or tarikh_val.strip() == "": continue
+                
+                tarikh_bersih = tarikh_val.split('T')[0].strip()
+                tarikh_beli = None
+                for format_tarikh in ("%Y-%m-%d", "%d-%m-%Y", "%d/%m/%Y", "%Y/%m/%d"):
+                    try: 
+                        tarikh_beli = datetime.datetime.strptime(tarikh_bersih, format_tarikh).date()
+                        break
+                    except ValueError: continue
+                
+                if tarikh_beli is None: continue
+                
+                if telefon_val not in pemetaan_pembelian_terkini:
+                    pemetaan_pembelian_terkini[telefon_val] = cust_cleaned
+                    pemetaan_pembelian_terkini[telefon_val]['_tarikh_obj'] = tarikh_beli
+                else:
+                    if tarikh_beli > pemetaan_pembelian_terkini[telefon_val]['_tarikh_obj']:
+                        pemetaan_pembelian_terkini[telefon_val] = cust_cleaned
+                        pemetaan_pembelian_terkini[telefon_val]['_tarikh_obj'] = tarikh_beli
+
+        senarai_repeat_order = []
+        for tel, data_terkini in pemetaan_pembelian_terkini.items():
+            sku_val = data_terkini.get('sku') or data_terkini.get('produk') or ''
+            tarikh_beli = data_terkini['_tarikh_obj']
+            pic_val = data_terkini.get('pic') or '-'
+            nama_val = data_terkini.get('nama') or data_terkini.get('namapelangan') or 'Pelanggan'
+            
+            config_produk = dapatkan_config_produk(sku_val)
+            tarikh_stok_habis = tarikh_beli + datetime.timedelta(days=config_produk["hari"])
+            
+            if hari_ini >= tarikh_stok_habis:
+                senarai_repeat_order.append({
+                    'nama': nama_val, 'sku': sku_val, 'pic': pic_val, 
+                    'telefon': tel, 'alamat': data_terkini.get('alamat') or 'Tiada Alamat', 
+                    'tarikh_stok_habis': tarikh_stok_habis, 'panggilan_produk': config_produk["panggilan"], 
+                    'tarikh_beli_formatted': tarikh_beli.strftime('%d/%m/%Y'),
+                    'jenis_fu': 'Matang (Masa Repeat Order)', '_raw': data_terkini
+                })
+        return senarai_lead_baru, senarai_repeat_order, None
+    except Exception as e:
+        return None, None, str(e)
+
+# ==========================================
+# USER AUTHENTICATION
+# ==========================================
 USER_CREDENTIALS = {
-    "hana": {"password": "hanahejja", "nama_penuh": "Hana (Admin)", "role": "admin"},
-    "ain": {"password": "ainhejja", "nama_penuh": "Ain", "role": "staff"},
-    "fana": {"password": "fanahejja", "nama_penuh": "Fana", "role": "staff"},
-    "qu": {"password": "quhejja", "nama_penuh": "Qu", "role": "staff"}
+    "admin": {"password": "123", "role": "admin", "nama": "Hana (Admin)"},
+    "ain": {"password": "111", "role": "staff", "nama": "Ain"},
+    "fana": {"password": "222", "role": "staff", "nama": "Fana"},
+    "qu": {"password": "333", "role": "staff", "nama": "Qu"}
 }
 
-if "logged_in" not in st.session_state: st.session_state["logged_in"] = False
-if "username" not in st.session_state: st.session_state["username"] = ""
-if "role" not in st.session_state: st.session_state["role"] = ""
-if "nama_penuh" not in st.session_state: st.session_state["nama_penuh"] = ""
+if "logged_in" not in st.session_state:
+    st.session_state["logged_in"] = False
+    st.session_state["username"] = ""
+    st.session_state["role"] = ""
+    st.session_state["nama_penuh"] = ""
 
-# ==========================================
-# 🧠 FUNGSI KITARAN REPEAT SALES PELANGGAN
-# ==========================================
-def dapatkan_config_produk(sku_nama):
-    sku_clean = str(sku_nama).strip()
-    sku_lower = sku_clean.lower()
-    config_default = {"hari": 30, "panggilan": sku_clean}
-    if not sku_clean: return config_default
-    senarai_angka = re.findall(r'\d+', sku_clean)
-    kuantiti = int(senarai_angka[0]) if senarai_angka else 1
-    if "travel" in sku_lower: return {"hari": 30, "panggilan": sku_clean}
-    elif "hegula" in sku_lower:
-        base_hari = 30 if "botol" in sku_lower else 90
-        return {"hari": base_hari * kuantiti, "panggilan": sku_clean}
-    elif "hecafe" in sku_lower or "hcafe" in sku_lower:
-        return {"hari": 15 * kuantiti, "panggilan": sku_clean}
-    elif "hegrano" in sku_lower:
-        return {"hari": 15 * kuantiti, "panggilan": sku_clean}
-    return config_default
-
-# ==========================================
-# 📊 FUNGSI MATRIKS PRESTASI SALES (KHAS ADMIN)
-# ==========================================
-def bina_matriks_produk(senarai_data):
-    if not senarai_data:
-        return pd.DataFrame(columns=["HEGULA", "HEGRANO", "HECAFE PLUS", "Jumlah"])
-    df = pd.DataFrame(senarai_data)
-    def kategorikan_jenama(sku_string):
-        text = str(sku_string).lower()
-        if "hegula" in text: return "HEGULA"
-        elif "hegrano" in text: return "HEGRANO"
-        elif "hecafe" in text or "hcafe" in text: return "HECAFE PLUS"
-        return "LAIN-LAIN"
-    df['Kategori Produk'] = df['sku'].apply(kategorikan_jenama)
-    matriks = pd.crosstab(df['pic'], df['Kategori Produk'])
-    for produk_wajib in ["HEGULA", "HEGRANO", "HECAFE PLUS"]:
-        if produk_wajib not in matriks.columns:
-            matriks[produk_wajib] = 0
-    matriks['Jumlah'] = matriks.get('HEGULA', 0) + matriks.get('HEGRANO', 0) + matriks.get('HECAFE PLUS', 0) + matriks.get('LAIN-LAIN', 0)
-    lajur_susunan = ["HEGULA", "HEGRANO", "HECAFE PLUS"]
-    if "LAIN-LAIN" in matriks.columns and matriks["LAIN-LAIN"].sum() > 0:
-        lajur_susunan.append("LAIN-LAIN")
-    lajur_susunan.append("Jumlah")
-    return matriks[lajur_susunan]
-
-# ==========================================
-# 🔒 PAPARAN LOGIN
-# ==========================================
 if not st.session_state["logged_in"]:
-    st.markdown("<br><br>", unsafe_allow_html=True)
-    col_login_1, col_login_2, col_login_3 = st.columns([1, 2, 1])
-    with col_login_2:
-        with st.container(border=True):
-            st.title("🚀 CRM Hejja HQ")
-            st.subheader("Sila Log Masuk Sesi Kerja")
-            input_user = st.text_input("ID Pengguna (Username):").strip().lower()
-            input_pass = st.text_input("Kata Laluan (Password):", type="password")
-            st.markdown("<br>", unsafe_allow_html=True)
-            if st.button("🔑 Log Masuk", use_container_width=True):
-                if input_user in USER_CREDENTIALS and USER_CREDENTIALS[input_user]["password"] == input_pass:
-                    st.session_state["logged_in"] = True
-                    st.session_state["username"] = input_user
-                    st.session_state["role"] = USER_CREDENTIALS[input_user]["role"]
-                    st.session_state["nama_penuh"] = USER_CREDENTIALS[input_user]["nama_penuh"]
-                    st.success("Log masuk berjaya!")
-                    st.rerun()
-                else: st.error("ID Pengguna atau Kata Laluan salah.")
+    st.title("🔒 Log Masuk Sistem CRM Hejja Pro")
+    username_input = st.text_input("Username:").strip().lower()
+    password_input = st.text_input("Password:", type="password")
+    
+    if st.button("Masuk Sistem 🚀", use_container_width=True):
+        if username_input in USER_CREDENTIALS and USER_CREDENTIALS[username_input]["password"] == password_input:
+            st.session_state["logged_in"] = True
+            st.session_state["username"] = username_input
+            st.session_state["role"] = USER_CREDENTIALS[username_input]["role"]
+            st.session_state["nama_penuh"] = USER_CREDENTIALS[username_input]["nama"]
+            st.rerun()
+        else:
+            st.error("❌ Username atau Password salah!")
     st.stop()
 
 # ==========================================
-# 👈 MENU NAVIGASI (SIDEBAR)
+# 🎯 SIDEBAR NAVIGATION (LISTING MENU)
 # ==========================================
-with st.sidebar:
-    st.title("🧭 CRM Hejja HQ")
-    st.write(f"👤 Pengguna: **{st.session_state['nama_penuh']}**")
-    st.write(f"🔑 Akses: `{st.session_state['role'].upper()}`")
-    st.markdown("---")
-    senarai_menu = ["➕ Daftar Jualan Baru", "🚨 Kaunter Follow-Up SKU", "📁 Bulk Upload Excel"]
-    pilihan_menu = st.radio("MENU UTAMA", senarai_menu)
-    st.markdown("<br><br><br>", unsafe_allow_html=True)
-    if st.button("🚪 Log Keluar Sistem", use_container_width=True):
-        st.session_state["logged_in"] = False; st.rerun()
+st.sidebar.title(f"Hi, {st.session_state['nama_penuh']}!")
+st.sidebar.write(f"Akses: **{st.session_state['role'].upper()}**")
+st.sidebar.markdown("---")
+
+# Menggunakan st.sidebar.radio supaya menu tersenarai penuh (listing) di sebelah kiri
+st.sidebar.markdown("### 📋 MENU UTAMA")
+pilihan_menu = st.sidebar.radio(
+    label="Pilih Halaman:",
+    options=[
+        "📝 Borang Jualan Manual",
+        "🚨 Kaunter Follow-Up SKU",
+        "🚀 Eksport Bulk Blaster",
+        "📥 Peti Data Ralat",
+        "📊 Muat Naik Pukal (Bulk Upload)"
+    ],
+    label_visibility="collapsed" # Sembunyikan label kecil untuk kekemasan
+)
+
+st.sidebar.markdown("---")
+if st.sidebar.button("Log Keluar 🚪", use_container_width=True):
+    st.session_state["logged_in"] = False
+    st.rerun()
 
 # ==========================================
-# HALAMAN 1: BORANG DAFTAR JUALAN BARU
+# HALAMAN 1: BORANG JUALAN MANUAL
 # ==========================================
-if pilihan_menu == "➕ Daftar Jualan Baru":
-    st.title("📊 Rekod Jualan Baru")
-    col1, col2 = st.columns(2)
-    with col1:
-        tarikh = st.date_input("Tarikh Beli/Masuk Lead:", datetime.date.today())
-        nama = st.text_input("Nama Pelanggan:", placeholder="Contoh: Ahmad")
-        no_telefon = st.text_input("Nombor Telefon (Mula 60):", placeholder="Contoh: 60123456789")
-        sku_pilihan = st.selectbox("Pilih SKU / Produk:", SENARAI_SKU_DROPDOWN)
-    with col2:
-        platform = st.selectbox("Platform:", ["WhatsApp", "TikTok Live", "TikTok Shop", "Website", "Lain-lain"])
-        if st.session_state["role"] == "admin":
-            pic = st.text_input("PIC Staff:", value=st.session_state["nama_penuh"])
-        else:
-            pic = st.text_input("PIC Staff:", value=st.session_state["nama_penuh"], disabled=True)
-        amaun = st.number_input("Amaun Jualan (RM):", min_value=0.0, step=1.0)
-        status = st.selectbox("Status:", ["Selesai (Paid)", "Lead Baru", "Follow-up"])
-    alamat = st.text_area("Alamat Pelanggan:", placeholder="Masukkan alamat penuh penghantaran di sini...")
-
-    if st.button("💾 Simpan Rekod", use_container_width=True):
-        if nama and pic and no_telefon:
-            data_pelanggan = {
-                "tarikh": str(tarikh), "nama": nama, "platform": platform, 
-                "pic": pic, "amaun": amaun, "status": status, "telefon": no_telefon, 
-                "sku": sku_pilihan, "alamat": alamat
-            }
-            with st.spinner("Tengah simpan..."):
+if pilihan_menu == "📝 Borang Jualan Manual":
+    st.title("📝 Borang Kemas Kini Jualan Baru")
+    
+    with st.form("borang_sales", clear_on_submit=True):
+        tarikh = st.date_input("Tarikh Jualan:", datetime.date.today())
+        nama = st.text_input("Nama Pelanggan / Prospek:").strip()
+        platform = st.selectbox("Platform Jualan:", ["WhatsApp New", "WhatsApp Rep", "Website New", "Website Rep", "Membership New", "Membership Rep"])
+        pic = st.session_state["nama_penuh"]
+        amaun = st.number_input("Amaun Jualan (RM):", min_value=0.0, format="%.2f")
+        status = st.selectbox("Status Pelanggan:", ["Lead Baru", "Selesai (Paid)", "Follow-Up Tambahan"])
+        telefon = st.text_input("No Telefon Pelanggan (Contoh: 60123456789):").strip()
+        sku = st.text_input("SKU Produk / Variasi:").strip()
+        alamat = st.text_area("Alamat Penghantaran:").strip()
+        
+        hantar = st.form_submit_with_button("Simpan Data Jualan 💾", use_container_width=True)
+        
+        if hantar:
+            if not nama or not telefon:
+                st.error("❌ Nama dan No Telefon pelanggan wajib diisi!")
+            else:
+                data_payload = {
+                    "tarikh": str(tarikh), "nama": nama, "platform": platform, "pic": pic,
+                    "amaun": float(amaun), "status": status, "telefon": telefon, "sku": sku, "alamat": alamat,
+                    "is_error": False, "sebab_ralat": ""
+                }
                 try:
-                    respon = requests.post(URL_GOOGLE_SHEET, json=data_pelanggan)
-                    if respon.status_code == 200: st.success(f"Rekod {nama} disimpan!"); st.balloons()
-                    else: st.error("Gagal simpan data.")
-                except Exception as e: st.error(f"Error: {e}")
-        else: st.warning("Sila pastikan Nama, No Telefon dan PIC diisi!")
+                    payload_final = bersihkan_untuk_json(data_payload)
+                    respon = requests.post(URL_GOOGLE_SHEET, json=payload_final)
+                    if respon.status_code == 200:
+                        st.success(f"🎉 Data {nama} berjaya dihantar!")
+                    else:
+                        st.error("❌ Gagal hantar ke server database.")
+                except Exception as e:
+                    st.error(f"❌ Ralat sistem: {str(e)}")
 
 # ==========================================
-# HALAMAN 2: PUSAT FOLLOW-UP SALES TEAM
+# HALAMAN 2: KAUNTER FOLLOW-UP SKU
 # ==========================================
 elif pilihan_menu == "🚨 Kaunter Follow-Up SKU":
-    st.title("🚨 Pusat Kawalan Tindakan Follow-Up")
-    with st.spinner("Tengah menarik data dari Google Sheets..."):
-        try:
-            respon_data = requests.get(URL_GOOGLE_SHEET)
-            if respon_data.status_code == 200:
-                senarai_customer = respon_data.json()
-                hari_ini = datetime.date.today()
-                
-                senarai_lead_baru = []
-                senarai_repeat_order = []
-                
-                for cust_raw in senarai_customer:
-                    cust = {str(k).lower().replace(" ", "").strip(): v for k, v in cust_raw.items()}
-                    tarikh_val = cust.get('tarikh') or cust.get('tarikhbeli') or ''
-                    status_val = str(cust.get('status') or '').strip().lower()
-                    sku_val = cust.get('sku') or cust.get('produk') or ''
-                    telefon_val = str(cust.get('telefon') or '').replace(".0", "")
-                    nama_val = cust.get('nama') or 'Pelanggan'
-                    pic_val = cust.get('pic') or '-'
-                    alamat_val = cust.get('alamat') or 'Tiada Alamat'
-                    
-                    if not status_val: continue
-                    
-                    if "lead" in status_val:
-                        senarai_lead_baru.append({'nama': nama_val, 'sku': sku_val, 'pic': pic_val, 'tarikh': str(tarikh_val).split('T')[0], 'telefon': telefon_val, 'alamat': alamat_val})
-                    elif "selesai" in status_val or "paid" in status_val or "follow" in status_val:
-                        if not tarikh_val or str(tarikh_val).strip() == "": continue
-                        config_produk = dapatkan_config_produk(sku_val)
-                        tarikh_bersih = str(tarikh_val).split('T')[0].strip()
-                        tarikh_beli = None
-                        for format_tarikh in ("%Y-%m-%d", "%d-%m-%Y", "%d/%m/%Y", "%Y/%m/%d"):
-                            try: tarikh_beli = datetime.datetime.strptime(tarikh_bersih, format_tarikh).date(); break
-                            except ValueError: continue
-                        if tarikh_beli is None: continue
-                        tarikh_stok_habis = tarikh_beli + datetime.timedelta(days=config_produk["hari"])
-                        if hari_ini >= tarikh_stok_habis:
-                            senarai_repeat_order.append({'nama': nama_val, 'sku': sku_val, 'pic': pic_val, 'telefon': telefon_val, 'alamat': alamat_val, 'tarikh_stok_habis': tarikh_stok_habis, 'panggilan_produk': config_produk["panggilan"], 'tarikh_beli_formatted': tarikh_beli.strftime('%d/%m/%Y')})
-
-                # ==========================================
-                # 📊 SEKSYEN RINGKASAN DATA UNTUK ADMIN (HANA)
-                # ==========================================
-                if st.session_state["role"] == "admin":
-                    st.markdown("### 📊 Papan Prestasi Tugasan Pasukan Jualan")
-                    col_matriks_1, col_matriks_2 = st.columns(2)
-                    with col_matriks_1:
-                        with st.container(border=True):
-                            st.markdown("🎯 **Matriks 1: Jumlah Lead Baru Tunggu Di-Close (Ikut Staff & Produk)**")
-                            jadual_lead = bina_matriks_produk(senarai_lead_baru)
-                            st.dataframe(jadual_lead, use_container_width=True)
-                    with col_matriks_2:
-                        with st.container(border=True):
-                            st.markdown("🛒 **Matriks 2: Jumlah Pelanggan Matang Perlu Re-Order (Ikut Staff & Produk)**")
-                            jadual_repeat = bina_matriks_produk(senarai_repeat_order)
-                            st.dataframe(jadual_repeat, use_container_width=True)
-                    st.markdown("---")
-
-                # ==========================================
-                # 🔒 TAPISAN AKSES DATA STAFF
-                # ==========================================
-                senarai_lead_dipapar = [l for l in senarai_lead_baru if st.session_state["role"] == "admin" or st.session_state["username"].lower() in str(l['pic']).lower()]
-                senarai_repeat_dipapar = [r for r in senarai_repeat_order if st.session_state["role"] == "admin" or st.session_state["username"].lower() in str(r['pic']).lower()]
-
-                if st.session_state["role"] != "admin":
-                    st.info(f"📋 Menampilkan senarai tugasan follow-up di bawah jagaan **{st.session_state['nama_penuh']}** sahaja.")
-
-                # ----------------------------------------------------
-                # 🎯 BAHAGIAN 1: SENARAI LEAD BARU TUGASAN TEAM
-                # ----------------------------------------------------
-                st.subheader("🎯 1. Senarai Lead Baru (Perlu Di-Close Segera)")
-                if len(senarai_lead_dipapar) > 0:
-                    data_lead_terkumpul = {}
-                    for lead in senarai_lead_dipapar:
-                        nama_pic = lead['pic']
-                        sku_text = str(lead['sku']).lower()
-                        if "hegula" in sku_text: kat_prod = "HEGULA"
-                        elif "hegrano" in sku_text: kat_prod = "HEGRANO"
-                        elif "hecafe" in sku_text or "hcafe" in sku_text: kat_prod = "HECAFE PLUS"
-                        else: kat_prod = "LAIN-LAIN"
-                        if nama_pic not in data_lead_terkumpul:
-                            data_lead_terkumpul[nama_pic] = {"HEGULA": [], "HEGRANO": [], "HECAFE PLUS": [], "LAIN-LAIN": []}
-                        data_lead_terkumpul[nama_pic][kat_prod].append(lead)
-                    
-                    for nama_pic, pecahan_produk in data_lead_terkumpul.items():
-                        total_lead_pic = sum(len(v) for v in pecahan_produk.values())
-                        with st.expander(f"👤 PIC: **{nama_pic}** — ({total_lead_pic} Lead Menunggu Tindakan Close)", expanded=True):
-                            tab_l_hegula, tab_l_hegrano, tab_l_hecafe, tab_l_lain = st.tabs(["🔴 HEGULA", "🟢 HEGRANO", "🟤 HECAFE PLUS", "📦 LAIN-LAIN"])
-                            
-                            with tab_l_hegula:
-                                if pecahan_produk["HEGULA"]:
-                                    for lead in pecahan_produk["HEGULA"]:
-                                        with st.container(border=True):
-                                            col_l1, col_l2 = st.columns([3, 1])
-                                            with col_l1:
-                                                st.write(f"👤 **Nama Pelanggan:** {lead['nama']} | 📦 **Minat SKU:** `{lead['sku']}`")
-                                                st.write(f"📅 Masuk: `{lead['tarikh']}` | 🏠 Alamat: *{lead['alamat']}*")
-                                            with col_l2:
-                                                ayat_lead = f"Salam {lead['nama']}, saya dari Hejja HQ. Hari tu ada berminat nak tahu pasal produk {lead['sku']} kan? Ada apa-apa soalan atau bantuan yang boleh saya bantu untuk mudahkan urusan anda? 😊"
-                                                st.link_button("📲 Close Lead", f"https://wa.me/{lead['telefon']}?text={urllib.parse.quote(ayat_lead)}", type="secondary", use_container_width=True)
-                                else: st.caption("🎉 Bersih! Tiada lead baharu untuk HEGULA.")
-                                    
-                            with tab_l_hegrano:
-                                if pecahan_produk["HEGRANO"]:
-                                    for lead in pecahan_produk["HEGRANO"]:
-                                        with st.container(border=True):
-                                            col_l1, col_l2 = st.columns([3, 1])
-                                            with col_l1: st.write(f"👤 **Nama Pelanggan:** {lead['nama']} | 📦 **Minat SKU:** `{lead['sku']}`")
-                                            with col_l2:
-                                                ayat_lead = f"Salam {lead['nama']}, saya dari Hejja HQ. Hari tu ada berminat nak tahu pasal produk {lead['sku']} kan? Ada apa-apa soalan atau bantuan yang boleh saya bantu untuk mudahkan urusan anda? 😊"
-                                                st.link_button("📲 Close Lead", f"https://wa.me/{lead['telefon']}?text={urllib.parse.quote(ayat_lead)}", type="secondary", use_container_width=True)
-                                else: st.caption("🎉 Bersih! Tiada lead baharu untuk HEGRANO.")
-                                    
-                            with tab_l_hecafe:
-                                if pecahan_produk["HECAFE PLUS"]:
-                                    for lead in pecahan_produk["HECAFE PLUS"]:
-                                        with st.container(border=True):
-                                            col_l1, col_l2 = st.columns([3, 1])
-                                            with col_l1: st.write(f"👤 **Nama Pelanggan:** {lead['nama']} | 📦 **Minat SKU:** `{lead['sku']}`")
-                                            with col_l2:
-                                                ayat_lead = f"Salam {lead['nama']}, saya dari Hejja HQ. Hari tu ada berminat nak tahu pasal produk {lead['sku']} kan? Ada apa-apa soalan atau bantuan yang boleh saya bantu untuk mudahkan urusan anda? 😊"
-                                                st.link_button("📲 Close Lead", f"https://wa.me/{lead['telefon']}?text={urllib.parse.quote(ayat_lead)}", type="secondary", use_container_width=True)
-                                else: st.caption("🎉 Bersih! Tiada lead baharu untuk HECAFE PLUS.")
-                                    
-                            with tab_l_lain:
-                                if pecahan_produk["LAIN-LAIN"]:
-                                    for lead in pecahan_produk["LAIN-LAIN"]:
-                                        with st.container(border=True):
-                                            col_l1, col_l2 = st.columns([3, 1])
-                                            with col_l1: st.write(f"👤 **Nama Pelanggan:** {lead['nama']} | 📦 **Minat SKU:** `{lead['sku']}`")
-                                            with col_l2:
-                                                ayat_lead = f"Salam {lead['nama']}, saya dari Hejja HQ. Hari tu ada berminat nak tahu pasal produk kan? Ada apa-apa bantuan yang boleh saya bantu? 😊"
-                                                st.link_button("📲 Close Lead", f"https://wa.me/{lead['telefon']}?text={urllib.parse.quote(ayat_lead)}", type="secondary", use_container_width=True)
-                                else: st.caption("Tiada senarai untuk lain-lain SKU.")
-                else: st.info("Tiada jualan berstatus 'Lead Baru' buat masa ini.")
-                
-                st.markdown("<br>", unsafe_allow_html=True)
-                
-                # ----------------------------------------------------
-                # 🛒 BAHAGIAN 2: FOLLOW-UP DATABASE REPEAT ORDER
-                # ----------------------------------------------------
-                st.subheader("🛒 2. Database Re-Order (Follow-Up Pelanggan Sedia Ada)")
-                if len(senarai_repeat_dipapar) > 0:
-                    data_terkumpul = {}
-                    for cust in senarai_repeat_dipapar:
-                        nama_pic = cust['pic']
-                        sku_text = str(cust['sku']).lower()
-                        if "hegula" in sku_text: kat_prod = "HEGULA"
-                        elif "hegrano" in sku_text: kat_prod = "HEGRANO"
-                        elif "hecafe" in sku_text or "hcafe" in sku_text: kat_prod = "HECAFE PLUS"
-                        else: kat_prod = "LAIN-LAIN"
-                        if nama_pic not in data_terkumpul:
-                            data_terkumpul[nama_pic] = {"HEGULA": [], "HEGRANO": [], "HECAFE PLUS": [], "LAIN-LAIN": []}
-                        data_terkumpul[nama_pic][kat_prod].append(cust)
-                    
-                    for nama_pic, pecahan_produk in data_terkumpul.items():
-                        total_followup_pic = sum(len(v) for v in pecahan_produk.values())
-                        with st.expander(f"👤 PIC: **{nama_pic}** — ({total_followup_pic} Klien Matang Perlu Hubungi Semula)", expanded=True):
-                            tab_hegula, tab_hegrano, tab_hecafe, tab_lain = st.tabs(["🔴 HEGULA", "🟢 HEGRANO", "🟤 HECAFE PLUS", "📦 LAIN-LAIN"])
-                            
-                            with tab_hegula:
-                                if pecahan_produk["HEGULA"]:
-                                    for cust in pecahan_produk["HEGULA"]:
-                                        with st.container(border=True):
-                                            col_r1, col_r2 = st.columns([3, 1])
-                                            with col_r1:
-                                                st.write(f"👤 **Pelanggan:** {cust['nama']} | 📦 **SKU Terakhir:** `{cust['sku']}`")
-                                                st.write(f"📅 Anggaran Bekalan Habis: `{cust['tarikh_stok_habis'].strftime('%d/%m/%Y')}` (Belian terakhir {cust['tarikh_beli_formatted']})")
-                                            with col_r2:
-                                                ayat_repeat = f"Salam {cust['nama']}, saya dari Hejja HQ. Saja nak tanya, {cust['panggilan_produk']} yang dibeli hari tu dah nak habis ke? Nak saya bantu uruskan order baharu untuk bulan ni? 😊"
-                                                st.link_button("📲 Hubungi Re-Order", f"https://wa.me/{cust['telefon']}?text={urllib.parse.quote(ayat_repeat)}", type="primary", use_container_width=True)
-                                else: st.caption("🎉 Bagus! Tiada pelanggan HEGULA perlu di-follow up hari ini.")
-                                    
-                            with tab_hegrano:
-                                if pecahan_produk["HEGRANO"]:
-                                    for cust in pecahan_produk["HEGRANO"]:
-                                        with st.container(border=True):
-                                            col_r1, col_r2 = st.columns([3, 1])
-                                            with col_r1: st.write(f"👤 **Pelanggan:** {cust['nama']} | 📦 **SKU Terakhir:** `{cust['sku']}`")
-                                            with col_r2:
-                                                ayat_repeat = f"Salam {cust['nama']}, saya dari Hejja HQ. Saja nak tanya, {cust['panggilan_produk']} yang dibeli hari tu dah nak habis ke? Nak saya bantu uruskan order baharu untuk bulan ni? 😊"
-                                                st.link_button("📲 Hubungi Re-Order", f"https://wa.me/{cust['telefon']}?text={urllib.parse.quote(ayat_repeat)}", type="primary", use_container_width=True)
-                                else: st.caption("🎉 Bagus! Tiada pelanggan HEGRANO perlu di-follow up hari ini.")
-                                    
-                            with tab_hecafe:
-                                if pecahan_produk["HECAFE PLUS"]:
-                                    for cust in pecahan_produk["HECAFE PLUS"]:
-                                        with st.container(border=True):
-                                            col_r1, col_r2 = st.columns([3, 1])
-                                            with col_r1: st.write(f"👤 **Pelanggan:** {cust['nama']} | 📦 **SKU Terakhir:** `{cust['sku']}`")
-                                            with col_r2:
-                                                ayat_repeat = f"Salam {cust['nama']}, saya dari Hejja HQ. Saja nak tanya, {cust['panggilan_produk']} yang dibeli hari tu dah nak habis ke? Nak saya bantu uruskan order baharu untuk bulan ni? 😊"
-                                                st.link_button("📲 Hubungi Re-Order", f"https://wa.me/{cust['telefon']}?text={urllib.parse.quote(ayat_repeat)}", type="primary", use_container_width=True)
-                                else: st.caption("🎉 Bagus! Tiada pelanggan HECAFE PLUS perlu di-follow up hari ini.")
-                                    
-                            with tab_lain:
-                                if pecahan_produk["LAIN-LAIN"]:
-                                    for cust in pecahan_produk["LAIN-LAIN"]:
-                                        with st.container(border=True):
-                                            col_r1, col_r2 = st.columns([3, 1])
-                                            with col_r1: st.write(f"👤 **Pelanggan:** {cust['nama']} | 📦 **SKU Terakhir:** `{cust['sku']}`")
-                                            with col_r2:
-                                                ayat_repeat = f"Salam {cust['nama']}, saya dari Hejja HQ. Saja nak tanya pasal produk yang dibeli hari tu dah nak habis ke? 😊"
-                                                st.link_button("📲 Hubungi Re-Order", f"https://wa.me/{cust['telefon']}?text={urllib.parse.quote(ayat_repeat)}", type="primary", use_container_width=True)
-                                else: st.caption("Tiada senarai untuk lain-lain SKU.")
-                else: st.success("Semua database repeat pelanggan bersih! Tiada tugasan re-order matang buat hari ini.")
-        except Exception as e: st.error(f"Error: {e}")
+    st.title("🚨 Kaunter Semakan Tugasan Follow-Up Harian")
+    with st.spinner("Tengah menarik data terkini..."):
+        leads, repeats, ralat = proses_data_crm()
+        if ralat:
+            st.error(f"❌ Ralat Sistem: {ralat}")
+        else:
+            tab1, tab2 = st.tabs(["🎯 1. Senarai Lead Baru", "🛒 2. Database Re-Order"])
+            
+            with tab1:
+                if not leads: st.write("Tiada lead baru.")
+                else:
+                    for lead in leads:
+                        if st.session_state["role"] != "admin" and lead['pic'].lower() != st.session_state["nama_penuh"].lower(): continue
+                        st.markdown(f"### 👤 {lead['nama']} (PIC: {lead['pic']})")
+                        st.write(f"📱 Telefon: {lead['telefon']} | 📦 SKU: {lead['sku']}")
+                        st.markdown("---")
+            with tab2:
+                if not repeats: st.write("Tiada pelanggan matang hari ini.")
+                else:
+                    for rep in repeats:
+                        if st.session_state["role"] != "admin" and rep['pic'].lower() != st.session_state["nama_penuh"].lower(): continue
+                        st.markdown(f"### 🛒 {rep['nama']} (PIC: {rep['pic']})")
+                        st.write(f"📱 Telefon: {rep['telefon']} | 📦 Jangkaan Habis: {rep['tarikh_stok_habis'].strftime('%d/%m/%Y')}")
+                        st.markdown("---")
 
 # ==========================================
-# HALAMAN 3: BULK UPLOAD EXCEL (SALES DATA)
+# HALAMAN 3: EXSPORT BULK BLASTER
 # ==========================================
-elif pilihan_menu == "📁 Bulk Upload Excel":
-    st.title("📁 Muat Naik Data Sales Secara Pukal")
-    if st.session_state["role"] == "admin":
-        st.warning("⚡ **Mod Admin:** Anda boleh memuat naik data jualan untuk mana-mana staff jualan mengikut lajur fail.")
-    else:
-        st.info(f"🔒 **Mod Staff ({st.session_state['nama_penuh']}):** Semua data jualan akan dikunci automatik ke nama anda.")
+elif pilihan_menu == "🚀 Eksport Bulk Blaster":
+    st.title("🚀 Hub Eksport Data Khas WhatsApp Bulk Blaster")
+    with st.spinner("Menyusun senarai..."):
+        leads, repeats, ralat = proses_data_crm()
+        if ralat: st.error(f"❌ Ralat: {ralat}")
+        else:
+            semua_aktif_fu = (leads or []) + (repeats or [])
+            sku_fu_unik = sorted(list(set([str(f['sku']).strip() for f in semua_aktif_fu if f.get('sku')])))
+            
+            if not sku_fu_unik:
+                st.success("🎉 Tiada tugasan follow-up hari ini.")
+            else:
+                sku_terpilih = st.selectbox("🎯 Pilih SKU:", sku_fu_unik)
+                rekod_final_blaster = []
+                for f in semua_aktif_fu:
+                    if st.session_state["role"] != "admin" and str(f['pic']).lower() != st.session_state["nama_penuh"].lower(): continue
+                    if str(f['sku']).strip() == sku_terpilih:
+                        rekod_final_blaster.append({
+                            "Nama": f['nama'], "Telefon": f['telefon'], "SKU_Produk": f['sku'], "Jenis": f['jenis_fu'], "PIC": f['pic']
+                        })
+                if rekod_final_blaster:
+                    df_b = pd.DataFrame(rekod_final_blaster)
+                    st.dataframe(df_b.astype(str), use_container_width=True)
+                    st.download_button("📥 MUAT TURUN CSV BLASTER", data=df_b.to_csv(index=False).encode('utf-8'), file_name="blaster.csv", mime="text/csv")
+
+# ==========================================
+# HALAMAN 4: PETI DATA RALAT
+# ==========================================
+elif pilihan_menu == "📥 Peti Data Ralat":
+    st.title("📥 Peti Kuarantin Data Ralat")
+    nama_pic_semasa = st.session_state["nama_penuh"]
     
-    data_template = {
-        "Tarikh": ["2026-05-26", "2026-05-27"], "Nama Pelanggan": ["Ahmad Abu", "Siti Aminah"], "Platform": ["TikTok Live", "WhatsApp"],
-        "PIC Staff": ["Diisi jika Admin", "Diisi jika Admin"], "Amaun Jualan": [150.00, 0.00], "Status": ["Selesai (Paid)", "Lead Baru"], 
-        "No Telefon": ["60123456789", "60198765432"], "SKU Produk": ["Hegula+ 1 Pouch", "Hegrano 1 Pouch"], "Alamat": ["No 123, Jalan Melati, KL", "No 45, Kampung Baru, Selangor"]
-    }
-    df_template = pd.DataFrame(data_template)
-    csv_bytes = df_template.to_csv(index=False).encode('utf-8')
-    st.download_button(label="📥 Download Template Excel/CSV Sales Baru", data=csv_bytes, file_name="Template_CRM_Sales_Hejja.csv", mime="text/csv", use_container_width=True)
+    try:
+        respon_ralat = requests.get(f"{URL_GOOGLE_SHEET}?action=ambil_ralat&pic={nama_pic_semasa}")
+        if respon_ralat.status_code == 200:
+            senarai_ralat = tukar_ke_json_selamat(respon_ralat.text)
+            if not senarai_ralat:
+                st.success("🎉 Tiada rekod data ralat untuk anda.")
+            else:
+                for item in senarai_ralat:
+                    if not item: continue
+                    def filter_str(v):
+                        s = str(v).strip()
+                        return "" if s.lower() in ["nan", "null", "undefined", "none"] else s
+
+                    with st.expander(f"❌ Baris {item.get('row_index')} | Nama: {filter_str(item.get('Nama Pelangan') or item.get('Nama'))}"):
+                        with st.form(f"form_b_{item.get('row_index')}"):
+                            new_tarikh = st.text_input("Tarikh:", filter_str(item.get('Tarikh')))
+                            new_nama = st.text_input("Nama Pelanggan:", filter_str(item.get('Nama Pelangan') or item.get('Nama')))
+                            new_platform = st.selectbox("Platform:", ["WhatsApp New", "WhatsApp Rep", "Website New", "Website Rep"])
+                            
+                            try: float_am = float(item.get('Amaun', 0))
+                            except: float_am = 0.0
+                            if math.isnan(float_am) or math.isinf(float_am): float_am = 0.0
+                            
+                            new_amaun = st.number_input("Amaun (RM):", min_value=0.0, value=float_am)
+                            new_status = st.text_input("Status:", filter_str(item.get('Status')))
+                            new_telefon = st.text_input("No Telefon:", filter_str(item.get('Telefon')))
+                            new_sku = st.text_input("SKU:", filter_str(item.get('SKU')))
+                            new_alamat = st.text_area("Alamat:", filter_str(item.get('Alamat')))
+                            
+                            if st.form_submit_with_button("💾 Sahkan & Bersihkan Data"):
+                                if not new_telefon.strip(): st.error("No Telefon wajib diisi!")
+                                else:
+                                    clean_payload = {
+                                        "tarikh": str(new_tarikh), "nama": str(new_nama), "platform": str(new_platform), "pic": str(nama_pic_semasa),
+                                        "amaun": float(new_amaun), "status": str(new_status), "telefon": str(new_telefon), "sku": str(new_sku), "alamat": str(new_alamat),
+                                        "is_error": False, "sebab_ralat": ""
+                                    }
+                                    payload_final = bersihkan_untuk_json(clean_payload)
+                                    if requests.post(URL_GOOGLE_SHEET, json=payload_final).status_code == 200:
+                                        requests.get(f"{URL_GOOGLE_SHEET}?action=padam_ralat&index={item.get('row_index')}")
+                                        st.success("Data Berjaya Diperbaiki!")
+                                        st.rerun()
+        else: st.error("Gagal berhubung ke server.")
+    except Exception as e: st.error(f"Ralat Peti Kuarantin: {str(e)}")
+
+# ==========================================
+# HALAMAN 5: BULK UPLOAD (ANTI-TIMEOUT CHUNKING + PROGRESS TRACKER)
+# ==========================================
+elif pilihan_menu == "📊 Muat Naik Pukal (Bulk Upload)":
+    st.title("📊 Sistem Muat Naik Data Jualan Pukal (CSV/Excel)")
     
-    st.markdown("---")
-    fail_diupload = st.file_uploader("Pilih fail template sales yang telah lengkap (.csv atau .xlsx):", type=["xlsx", "csv"])
+    fail_diupload = st.file_uploader("Pilih Fail Excel atau CSV:", type=['csv', 'xlsx'])
     
     if fail_diupload is not None:
         try:
-            df = pd.read_csv(fail_diupload) if fail_diupload.name.endswith('.csv') else pd.read_excel(fail_diupload)
+            if fail_diupload.name.endswith('.csv'): 
+                df_raw = pd.read_csv(fail_diupload)
+            else: 
+                df_raw = pd.read_excel(fail_diupload)
             
-            # KESELAMATAN: Tukar semua nama lajur fail yang di-upload menjadi huruf kecil & buang whitespace
+            df = df_raw.copy()
             df.columns = [str(c).strip().lower() for c in df.columns]
             
-            st.subheader("👀 Pratinjau Data Jualan")
-            st.dataframe(df)
-            total_data = len(df)
-            st.write(f"Jumlah rekod dikesan: **{total_data} baris jualan**")
+            for col in df.columns:
+                df[col] = df[col].apply(lambda x: "" if pd.isna(x) or str(x).strip().lower() in ["nan", "null", "undefined", "none"] else str(x).strip())
+            
+            st.write(f"👀 **Pratonton Fail (Total: {len(df)} Baris Data Dikesan):**")
+            st.dataframe(df, use_container_width=True)
             
             if st.button("🚀 Sah & Hantar Semua Data Sales ke Google Sheets", use_container_width=True):
                 bulk_data = []
                 for index, row in df.iterrows():
-                    # Padankan mapping lajur dengan selamat (case-insensitive)
-                    tarikh_val = row.get('tarikh') if pd.notna(row.get('tarikh')) else datetime.date.today()
-                    nama_val = row.get('nama pelanggan') or row.get('nama') or 'Pelanggan Pukal'
-                    platform_val = row.get('platform') if pd.notna(row.get('platform')) else 'Lain-lain'
-                    amaun_val = float(row.get('amaun jualan') or row.get('amaun') or 0.0)
-                    status_asal = str(row.get('status')).strip() if pd.notna(row.get('status')) else "Lead Baru"
-                    telefon_val = str(row.get('no telefon') or row.get('telefon')).replace(".0", "").strip()
-                    sku_val = str(row.get('sku produk') or row.get('sku'))
-                    alamat_row = str(row.get('alamat')) if pd.notna(row.get('alamat')) else ""
                     
-                    if st.session_state["role"] == "admin":
-                        pic_row = str(row.get('pic staff') or row.get('pic')) if pd.notna(row.get('pic staff') or row.get('pic')) else st.session_state["nama_penuh"]
+                    def ambil_kolum(senarai_nama_lajur, default_value=""):
+                        for nama in senarai_nama_lajur:
+                            if nama in row and str(row[nama]).strip() != "":
+                                val = str(row[nama]).strip()
+                                if val.lower() in ['nan', 'null', 'undefined', 'none']:
+                                    return default_value
+                                return val
+                        return default_value
+
+                    tarikh_str = ambil_kolum(['tarikh', 'tarikhbeli', 'tarikh jualan'], str(datetime.date.today()))
+                    nama_val = ambil_kolum(['nama pelangan', 'nama pelanggan', 'nama'], 'Pelanggan Pukal')
+                    platform_val = ambil_kolum(['platform'], 'Lain-lain')
+                    status_asal = ambil_kolum(['status', 'status pelanggan'], 'Lead Baru')
+                    sku_val = ambil_kolum(['sku', 'sku produk', 'produk'], '')
+                    alamat_row = ambil_kolum(['alamat', 'alamat penghantaran'], '')
+                    pic_row = ambil_kolum(['pic'], st.session_state["nama_penuh"])
+                    
+                    is_error = False
+                    sebab_ralat = ""
+                    
+                    raw_amaun = ambil_kolum(['amaun', 'amaun jualan', 'harga'], '')
+                    if raw_amaun == "":
+                        amaun_val = 0.0
+                        is_error = True
+                        sebab_ralat += "[Amaun Kosong] "
                     else:
-                        pic_row = st.session_state["nama_penuh"]
+                        try: 
+                            raw_amaun_clean = str(raw_amaun).replace("RM", "").replace(",", "").strip()
+                            amaun_val = float(raw_amaun_clean)
+                            if math.isnan(amaun_val) or math.isinf(amaun_val):
+                                amaun_val = 0.0
+                                is_error = True
+                                sebab_ralat += "[Amaun NaN] "
+                        except:
+                            amaun_val = 0.0
+                            is_error = True
+                            sebab_ralat += "[Format Amaun Salah] "
+                            
+                    telefon_val = ambil_kolum(['telefon', 'no telefon', 'nombor telefon', 'phone'], '')
+                    telefon_val = telefon_val.replace(".0", "").replace("+", "").replace("-", "").strip()
+                    
+                    if telefon_val == "" or telefon_val.lower() in ['nan', 'null']:
+                        telefon_val = ""
+                        is_error = True
+                        sebab_ralat += "[No Telefon Kosong] "
                     
                     bulk_data.append({
-                        "tarikh": str(tarikh_val).split()[0], "nama": str(nama_val), "platform": str(platform_val), 
-                        "pic": pic_row, "amaun": amaun_val, "status": status_asal, "telefon": telefon_val, 
-                        "sku": sku_val, "alamat": alamat_row
+                        "tarikh": str(tarikh_str), "nama": str(nama_val), "platform": str(platform_val), 
+                        "pic": str(pic_row), "amaun": float(amaun_val), "status": str(status_asal), "telefon": str(telefon_val), 
+                        "sku": str(sku_val), "alamat": str(alamat_row), "is_error": bool(is_error), "sebab_ralat": str(sebab_ralat)
                     })
+                
+                CHUNK_SIZE = 200
+                total_data = len(bulk_data)
+                
+                progress_bar = st.progress(0.0)
+                status_teks = st.empty()
+                
+                sukses_hantar = True
+                masa_mula = time.time()
+                
+                for i in range(0, total_data, CHUNK_SIZE):
+                    chunk = bulk_data[i:i + CHUNK_SIZE]
+                    chunk_bersih = bersihkan_untuk_json(chunk)
                     
-                with st.spinner(f"Sedang memproses {total_data} data jualan..."):
-                    respon = requests.post(URL_GOOGLE_SHEET, json=bulk_data)
-                    if respon.status_code == 200: 
-                        st.success(f"Berjaya memasukkan {total_data} rekod jualan!")
-                        st.balloons()
-                    else: 
-                        st.error("Gagal hantar data pukal. Sila semak Apps Script anda.")
-        except Exception as e: 
-            st.error(f"Ralat format fail jualan: {e}")
+                    peratus_siap = min((i + CHUNK_SIZE) / total_data, 1.0)
+                    peratus_paparan = int(peratus_siap * 100)
+                    
+                    masa_berlalu = time.time() - masa_mula
+                    kadar_kelajuan = (i + len(chunk)) / masa_berlalu
+                    baki_data = total_data - (i + len(chunk))
+                    
+                    if kadar_kelajuan > 0:
+                        baki_masa_saat = baki_data / kadar_kelajuan
+                        baki_minit = int(baki_masa_saat // 60)
+                        baki_saat = int(baki_masa_saat % 60)
+                        eta_teks = f"{baki_minit} min {baki_saat} saat" if baki_minit > 0 else f"{baki_saat} saat"
+                    else:
+                        eta_teks = "Mengira..."
+
+                    status_teks.markdown(f"""
+                    🔄 **Status Muat Naik: {peratus_paparan}% Selesai** 📦 Sedang memproses baris `{i+1}` hingga `{min(i+CHUNK_SIZE, total_data)}` daripada `{total_data}` baris.  
+                    ⏱️ Anggaran masa berbaki: **{eta_teks}**
+                    """)
+                    
+                    progress_bar.progress(peratus_siap)
+                    
+                    try:
+                        hantar_respon = requests.post(URL_GOOGLE_SHEET, json=chunk_bersih)
+                        if hantar_respon.status_code != 200:
+                            sukses_hantar = False
+                            st.error(f"❌ Gagal pada kumpulan baris {i+1} - {min(i+CHUNK_SIZE, total_data)}")
+                            break
+                    except Exception as e:
+                        sukses_hantar = False
+                        st.error(f"❌ Ralat rangkaian pada baris {i+1}: {str(e)}")
+                        break
+                
+                if sukses_hantar:
+                    masa_total = time.time() - masa_mula
+                    total_minit = int(masa_total // 60)
+                    total_saat = int(masa_total % 60)
+                    
+                    status_teks.empty()
+                    progress_bar.empty()
+                    
+                    st.success(f"🎉 **Selesai 100%!** Kesemua {total_data} data berjaya dimasukkan dalam masa {total_minit} minit {total_saat} saat!")
+                    st.balloons()
+
+        except Exception as e:
+            st.error(f"❌ Ralat Muat Naik: {str(e)}")
