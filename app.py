@@ -318,7 +318,6 @@ elif pilihan_menu == "🚀 Eksport Bulk Blaster":
             display_kategori("Hegrano", tab_hegrano)
             display_kategori("Hecafe", tab_hecafe)
             display_kategori("Lain-lain", tab_lain)
-            )
 # ==========================================
 # HALAMAN 4: PETI DATA RALAT
 # ==========================================
