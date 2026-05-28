@@ -199,44 +199,6 @@ if st.sidebar.button("Log Keluar 🚪", use_container_width=True):
     st.rerun()
 
 # ==========================================
-# HALAMAN 1: BORANG JUALAN MANUAL
-# ==========================================
-if pilihan_menu == "📝 Borang Jualan Manual":
-    st.title("📝 Borang Kemas Kini Jualan Baru")
-    
-    with st.form("borang_sales", clear_on_submit=True):
-        tarikh = st.date_input("Tarikh Jualan:", datetime.date.today())
-        nama = st.text_input("Nama Pelanggan / Prospek:").strip()
-        platform = st.selectbox("Platform Jualan:", ["WhatsApp New", "WhatsApp Rep", "Website New", "Website Rep", "Membership New", "Membership Rep"])
-        pic = st.session_state["nama_penuh"]
-        amaun = st.number_input("Amaun Jualan (RM):", min_value=0.0, format="%.2f")
-        status = st.selectbox("Status Pelanggan:", ["Lead Baru", "Selesai (Paid)", "Follow-Up Tambahan"])
-        telefon = st.text_input("No Telefon Pelanggan (Contoh: 60123456789):").strip()
-        sku = st.text_input("SKU Produk / Variasi:").strip()
-        alamat = st.text_area("Alamat Penghantaran:").strip()
-        
-        hantar = st.form_submit_with_button("Simpan Data Jualan 💾", use_container_width=True)
-        
-        if hantar:
-            if not nama or not telefon:
-                st.error("❌ Nama dan No Telefon pelanggan wajib diisi!")
-            else:
-                data_payload = {
-                    "tarikh": str(tarikh), "nama": nama, "platform": platform, "pic": pic,
-                    "amaun": float(amaun), "status": status, "telefon": telefon, "sku": sku, "alamat": alamat,
-                    "is_error": False, "sebab_ralat": ""
-                }
-                try:
-                    payload_final = bersihkan_untuk_json(data_payload)
-                    respon = requests.post(URL_GOOGLE_SHEET, json=payload_final)
-                    if respon.status_code == 200:
-                        st.success(f"🎉 Data {nama} berjaya dihantar!")
-                    else:
-                        st.error("❌ Gagal hantar ke server database.")
-                except Exception as e:
-                    st.error(f"❌ Ralat sistem: {str(e)}")
-
-# ==========================================
 # HALAMAN 2: KAUNTER FOLLOW-UP SKU
 # ==========================================
 elif pilihan_menu == "🚨 Kaunter Follow-Up SKU":
