@@ -184,13 +184,12 @@ st.sidebar.markdown("### 📋 MENU UTAMA")
 pilihan_menu = st.sidebar.radio(
     label="Pilih Halaman:",
     options=[
-        "📝 Borang Jualan Manual",
         "🚨 Kaunter Follow-Up SKU",
         "🚀 Eksport Bulk Blaster",
         "📥 Peti Data Ralat",
         "📊 Muat Naik Pukal (Bulk Upload)"
     ],
-    label_visibility="collapsed" # Sembunyikan label kecil untuk kekemasan
+    label_visibility="collapsed"
 )
 
 st.sidebar.markdown("---")
@@ -199,7 +198,7 @@ if st.sidebar.button("Log Keluar 🚪", use_container_width=True):
     st.rerun()
 
 # ==========================================
-# HALAMAN 2: KAUNTER FOLLOW-UP SKU
+# HALAMAN 1: KAUNTER FOLLOW-UP SKU
 # ==========================================
 elif pilihan_menu == "🚨 Kaunter Follow-Up SKU":
     st.title("🚨 Kaunter Semakan Tugasan Follow-Up Harian")
@@ -257,7 +256,7 @@ elif pilihan_menu == "🚨 Kaunter Follow-Up SKU":
             paparkan_ikut_kategori(repeats, tab2)
 
 # ==========================================
-# HALAMAN 3: EXSPORT BULK BLASTER (KATEGORI MUTLAK)
+# HALAMAN 2: EXSPORT BULK BLASTER (KATEGORI MUTLAK)
 # ==========================================
 elif pilihan_menu == "🚀 Eksport Bulk Blaster":
     st.title("🚀 Hub Eksport Data Khas WhatsApp Bulk Blaster")
@@ -310,7 +309,7 @@ elif pilihan_menu == "🚀 Eksport Bulk Blaster":
             display_kategori("Hecafe", tab_hecafe)
             display_kategori("Lain-lain", tab_lain)
 # ==========================================
-# HALAMAN 4: PETI DATA RALAT
+# HALAMAN 3: PETI DATA RALAT
 # ==========================================
 elif pilihan_menu == "📥 Peti Data Ralat":
     st.title("📥 Peti Kuarantin Data Ralat")
@@ -362,7 +361,7 @@ elif pilihan_menu == "📥 Peti Data Ralat":
     except Exception as e: st.error(f"Ralat Peti Kuarantin: {str(e)}")
 
 # ==========================================
-# HALAMAN 5: BULK UPLOAD (ANTI-TIMEOUT CHUNKING + PROGRESS TRACKER)
+# HALAMAN 4: BULK UPLOAD (ANTI-TIMEOUT CHUNKING + PROGRESS TRACKER)
 # ==========================================
 elif pilihan_menu == "📊 Muat Naik Pukal (Bulk Upload)":
     st.title("📊 Sistem Muat Naik Data Jualan Pukal (CSV/Excel)")
