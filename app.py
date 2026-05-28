@@ -57,11 +57,11 @@ def proses_data_crm():
     try:
         respon_data = requests.get(f"{URL_GOOGLE_SHEET}?action=ambil_sales")
         if respon_data.status_code != 200:
-            return None, None, "Gagal berhubung dengan database server Google."
+            return None, None, None, "Gagal berhubung dengan database server Google."
         
         senarai_customer = tukar_ke_json_selamat(respon_data.text)
         if not senarai_customer:
-            return [], [], None
+            return [], [], [], None
             
         hari_ini = datetime.date.today()
         senarai_lead_baru = []
@@ -110,6 +110,10 @@ def proses_data_crm():
                 
                 if tarikh_beli is None: continue
                 
+                # Masukkan data nama, telefon yang diperlukan untuk loop bawah
+                cust_cleaned['nama_clean'] = nama_val
+                cust_cleaned['telefon_clean'] = telefon_val
+                
                 if telefon_val not in pemetaan_pembelian_terkini:
                     pemetaan_pembelian_terkini[telefon_val] = cust_cleaned
                     pemetaan_pembelian_terkini[telefon_val]['_tarikh_obj'] = tarikh_beli
@@ -118,42 +122,36 @@ def proses_data_crm():
                         pemetaan_pembelian_terkini[telefon_val] = cust_cleaned
                         pemetaan_pembelian_terkini[telefon_val]['_tarikh_obj'] = tarikh_beli
 
-        # ... (di dalam fungsi proses_data_crm)
-        
-        # (Bahagian dalam proses_data_crm)
         senarai_feedback = []
         senarai_repeat_order = []
         
         for tel, data_terkini in pemetaan_pembelian_terkini.items():
             sku_val = data_terkini.get('sku') or data_terkini.get('produk') or ''
             tarikh_beli = data_terkini['_tarikh_obj']
-            pic_val = data_terkini.get('pic') or '-'
-            nama_val = data_terkini.get('nama') or data_terkini.get('namapelangan') or 'Pelanggan'
+            nama_clean = data_terkini.get('nama_clean', 'Pelanggan')
+            pic_clean = data_terkini.get('pic') or '-'
+            hari_berlalu = (hari_ini - tarikh_beli).days
             
-            # --- 1. LOGIK FEEDBACK/PARCEL (<= 7 hari) ---
-            if (hari_ini - tarikh_beli).days <= 7:
+            # --- LOGIK 1: FEEDBACK (Parcel sampai: Hari ke-3 hingga Hari ke-7) ---
+            if 3 <= hari_berlalu <= 7:
                 senarai_feedback.append({
-                    'nama': nama_val, 'sku': sku_val, 'pic': pic_val, 
-                    'telefon': tel, 'alamat': data_terkini.get('alamat') or 'Tiada Alamat',
-                    'jenis_fu': 'Feedback/Parcel', '_raw': data_terkini
+                    'nama': nama_clean, 'telefon': tel, 'sku': sku_val, 'pic': pic_clean,
+                    'jenis_fu': 'Tanya Feedback/Parcel', '_raw': data_terkini
                 })
             
-            # --- 2. LOGIK REPEAT ORDER ---
+            # --- LOGIK 2: REPEAT ORDER (Stok dah habis) ---
             config_produk = dapatkan_config_produk(sku_val)
-            tarikh_stok_habis = tarikh_beli + datetime.timedelta(days=config_produk["hari"])
-            
-            if hari_ini >= tarikh_stok_habis:
+            if hari_berlalu >= config_produk["hari"]:
                 senarai_repeat_order.append({
-                    'nama': nama_val, 'sku': sku_val, 'pic': pic_val, 
-                    'telefon': tel, 'alamat': data_terkini.get('alamat') or 'Tiada Alamat', 
-                    'tarikh_stok_habis': tarikh_stok_habis, 'panggilan_produk': config_produk["panggilan"], 
-                    'tarikh_beli_formatted': tarikh_beli.strftime('%d/%m/%Y'),
-                    'jenis_fu': 'Matang (Repeat)', '_raw': data_terkini
+                    'nama': nama_clean, 'telefon': tel, 'sku': sku_val, 'pic': pic_clean,
+                    'tarikh_stok_habis': (tarikh_beli + datetime.timedelta(days=config_produk["hari"])).strftime('%Y-%m-%d'),
+                    'jenis_fu': 'Repeat Order', '_raw': data_terkini
                 })
 
         return senarai_lead_baru, senarai_feedback, senarai_repeat_order, None
     except Exception as e:
         return None, None, None, str(e)
+
 # ==========================================
 # USER AUTHENTICATION
 # ==========================================
@@ -193,7 +191,6 @@ st.sidebar.title(f"Hi, {st.session_state['nama_penuh']}!")
 st.sidebar.write(f"Akses: **{st.session_state['role'].upper()}**")
 st.sidebar.markdown("---")
 
-# Menggunakan st.sidebar.radio supaya menu tersenarai penuh (listing) di sebelah kiri
 st.sidebar.markdown("### 📋 MENU UTAMA")
 pilihan_menu = st.sidebar.radio(
     label="Pilih Halaman:",
@@ -211,132 +208,107 @@ if st.sidebar.button("Log Keluar 🚪", use_container_width=True):
     st.session_state["logged_in"] = False
     st.rerun()
 
+# Fungsi pembantu global untuk pengelasan kategori produk
+def tentukan_kategori(sku_text):
+    s = str(sku_text).lower()
+    if "hegula" in s: return "Hegula"
+    if "hegrano" in s: return "Hegrano"
+    if "hecafe" in s or "coffee" in s or "kopi" in s: return "Hecafe"
+    return "Lain-lain"
+
+# Fungsi paparan dinamik mengikut tab yang aktif
+def paparkan_ikut_kategori(data_list):
+    if not data_list:
+        st.info("Tiada data untuk kategori ini.")
+        return
+
+    if st.session_state["role"] != "admin":
+        data_list = [d for d in data_list if str(d['pic']).lower() == st.session_state["nama_penuh"].lower()]
+
+    if not data_list:
+        st.info("Tiada tugasan untuk anda.")
+        return
+
+    kategori_list = ["Hegula", "Hegrano", "Hecafe", "Lain-lain"]
+    sub_tabs = st.tabs(kategori_list)
+    
+    for i, kat in enumerate(kategori_list):
+        with sub_tabs[i]:
+            data_filter = [d for d in data_list if tentukan_kategori(d['sku']) == kat]
+            
+            if not data_filter:
+                st.write(f"Tiada data {kat}.")
+            else:
+                df = pd.DataFrame(data_filter)
+                cols = ['nama', 'telefon', 'sku']
+                if 'tarikh_stok_habis' in df.columns: 
+                    cols.append('tarikh_stok_habis')
+                if 'jenis_fu' in df.columns: 
+                    cols.append('jenis_fu')
+                
+                st.dataframe(df[cols], use_container_width=True, hide_index=True)
+                st.write(f"📊 Jumlah {kat}: **{len(data_filter)} pelanggan**")
+
 # ==========================================
-# HALAMAN 1: KAUNTER FOLLOW-UP SKU
+# PENGURUSAN HALAMAN (IF/ELIF FLOW)
 # ==========================================
-elif pilihan_menu == "🚨 Kaunter Follow-Up SKU":
+if pilihan_menu == "🚨 Kaunter Follow-Up SKU":
     st.title("🚨 Kaunter Semakan Tugasan Follow-Up")
     
-    # Fungsi pembantu untuk kategori (Letak di atas atau guna yang sedia ada)
-    def tentukan_kategori(sku_text):
-        s = str(sku_text).lower()
-        if "hegula" in s: return "Hegula"
-        if "hegrano" in s: return "Hegrano"
-        if "hecafe" in s or "coffee" in s or "kopi" in s: return "Hecafe"
-        return "Lain-lain"
-
-    # Fungsi untuk papar list minimalis
-    def paparkan_ikut_kategori(data_list, tab_obj):
-        with tab_obj:
-            if not data_list:
-                st.info("Tiada data.")
-                return
-
-        # Filter ikut PIC (kecuali admin)
-        if st.session_state["role"] != "admin":
-            data_list = [d for d in data_list if str(d['pic']).lower() == st.session_state["nama_penuh"].lower()]
-
-        if not data_list:
-            st.info("Tiada tugasan untuk anda.")
-            return
-
-        kategori_list = ["Hegula", "Hegrano", "Hecafe", "Lain-lain"]
-        tabs = st.tabs(kategori_list)
-        
-        for i, kat in enumerate(kategori_list):
-            with tabs[i]:
-                data_filter = [d for d in data_list if tentukan_kategori(d['sku']) == kat]
-                
-                if not data_filter:
-                    st.write(f"Tiada data {kat}.")
-                else:
-                    df = pd.DataFrame(data_filter)
-                    
-                    # Logik column dinamik:
-                    # Kita sentiasa tunjuk nama, telefon, sku
-                    cols = ['nama', 'telefon', 'sku']
-                    
-                    # Kalau ada tarikh_stok_habis (Repeat Order), kita tunjuk
-                    if 'tarikh_stok_habis' in df.columns:
-                        cols.append('tarikh_stok_habis')
-                    
-                    # Tambah 'jenis_fu' jika anda mahu lihat beza feedback vs repeat
-                    if 'jenis_fu' in df.columns:
-                        cols.append('jenis_fu')
-                    
-                    # Paparkan dataframe
-                    st.dataframe(df[cols], use_container_width=True, hide_index=True)
-                    st.write(f"📊 Jumlah {kat}: **{len(data_filter)} pelanggan**")
-
-    # Logik utama halaman
     with st.spinner("Tengah tarik data..."):
-        # TERIMA 4 NILAI SEKARANG
         leads, feedback, repeats, ralat = proses_data_crm()
         if ralat:
             st.error(f"❌ Ralat Sistem: {ralat}")
         else:
             tab1, tab2, tab3 = st.tabs(["🎯 1. Lead Baru", "📦 2. Feedback/Parcel", "🛒 3. Repeat Order"])
             
-            paparkan_ikut_kategori(leads, tab1)
-            paparkan_ikut_kategori(feedback, tab2)
-            paparkan_ikut_kategori(repeats, tab3)
+            with tab1:
+                paparkan_ikut_kategori(leads)
+            with tab2:
+                paparkan_ikut_kategori(feedback)
+            with tab3:
+                paparkan_ikut_kategori(repeats)
 
-# ==========================================
-# HALAMAN 2: EXSPORT BULK BLASTER (KATEGORI MUTLAK)
-# ==========================================
 elif pilihan_menu == "🚀 Eksport Bulk Blaster":
     st.title("🚀 Hub Eksport Data Khas WhatsApp Bulk Blaster")
     
     with st.spinner("Menyusun senarai mengikut kategori..."):
-        leads, repeats, ralat = proses_data_crm()
+        leads, feedback, repeats, ralat = proses_data_crm()
         
         if ralat: 
             st.error(f"❌ Ralat: {ralat}")
         else:
-            semua_aktif_fu = (leads or []) + (repeats or [])
+            sema_aktif_fu = (leads or []) + (feedback or []) + (repeats or [])
             
-            # 1. Definisi fungsi kategori (Pastikan ni sama dengan 'dapatkan_config_produk')
-            def tentukan_kategori(sku_text):
-                s = str(sku_text).lower()
-                if "hegula" in s: return "Hegula"
-                if "hegrano" in s: return "Hegrano"
-                if "hecafe" in s or "coffee" in s or "kopi" in s: return "Hecafe"
-                return "Lain-lain"
-
-            # 2. Assign kategori kepada setiap data
-            for f in semua_aktif_fu:
+            for f in sema_aktif_fu:
                 f['kategori_produk'] = tentukan_kategori(f['sku'])
             
-            # 3. Tab pilihan (Lebih senang nampak pecahan)
             tab_hegula, tab_hegrano, tab_hecafe, tab_lain = st.tabs(["Hegula", "Hegrano", "Hecafe", "Lain-lain"])
             
-            # Fungsi untuk display tab
             def display_kategori(kategori_nama, tab_obj):
                 with tab_obj:
-                    data_filter = [f for f in semua_aktif_fu if f['kategori_produk'] == kategori_nama]
-                    
-                    # Filter PIC (kecuali admin)
+                    data_filter = [f for f in sema_aktif_fu if f.get('kategori_produk') == kategori_nama]
                     if st.session_state["role"] != "admin":
-                        data_filter = [f for f in data_filter if str(f['pic']).lower() == st.session_state["nama_penuh"].lower()]
+                        data_filter = [f for f in data_filter if str(f.get('pic')).lower() == st.session_state["nama_penuh"].lower()]
                     
                     if not data_filter:
                         st.info(f"Tiada data untuk {kategori_nama}.")
                     else:
                         st.write(f"📊 Jumlah {kategori_nama}: **{len(data_filter)} pelanggan**")
                         df_b = pd.DataFrame(data_filter)
-                        st.dataframe(df_b[['nama', 'telefon', 'sku', 'jenis_fu', 'pic']], use_container_width=True)
+                        display_cols = ['nama', 'telefon', 'sku', 'jenis_fu', 'pic']
+                        # Pastikan column wujud sebelum paparkan
+                        display_cols = [c for c in display_cols if c in df_b.columns]
+                        st.dataframe(df_b[display_cols], use_container_width=True)
                         
                         csv = df_b.to_csv(index=False).encode('utf-8')
                         st.download_button(f"📥 Download {kategori_nama}.csv", csv, f"blaster_{kategori_nama}.csv", "text/csv")
 
-            # Papar tab
             display_kategori("Hegula", tab_hegula)
             display_kategori("Hegrano", tab_hegrano)
             display_kategori("Hecafe", tab_hecafe)
             display_kategori("Lain-lain", tab_lain)
-# ==========================================
-# HALAMAN 3: PETI DATA RALAT
-# ==========================================
+
 elif pilihan_menu == "📥 Peti Data Ralat":
     st.title("📥 Peti Kuarantin Data Ralat")
     nama_pic_semasa = st.session_state["nama_penuh"]
@@ -386,9 +358,6 @@ elif pilihan_menu == "📥 Peti Data Ralat":
         else: st.error("Gagal berhubung ke server.")
     except Exception as e: st.error(f"Ralat Peti Kuarantin: {str(e)}")
 
-# ==========================================
-# HALAMAN 4: BULK UPLOAD (ANTI-TIMEOUT CHUNKING + PROGRESS TRACKER)
-# ==========================================
 elif pilihan_menu == "📊 Muat Naik Pukal (Bulk Upload)":
     st.title("📊 Sistem Muat Naik Data Jualan Pukal (CSV/Excel)")
     
