@@ -237,33 +237,62 @@ if pilihan_menu == "📝 Borang Jualan Manual":
                     st.error(f"❌ Ralat sistem: {str(e)}")
 
 # ==========================================
-# HALAMAN 2: KAUNTER FOLLOW-UP SKU
+# HALAMAN 2: KAUNTER FOLLOW-UP SKU (DIKEMASKINI)
 # ==========================================
 elif pilihan_menu == "🚨 Kaunter Follow-Up SKU":
     st.title("🚨 Kaunter Semakan Tugasan Follow-Up Harian")
-    with st.spinner("Tengah menarik data terkini..."):
+    
+    # 1. Definisi fungsi kategori supaya konsisten
+    def tentukan_kategori(sku_text):
+        s = str(sku_text).lower()
+        if "hegula" in s: return "Hegula"
+        if "hegrano" in s: return "Hegrano"
+        if "hecafe" in s or "coffee" in s or "kopi" in s: return "Hecafe"
+        return "Lain-lain"
+
+    with st.spinner("Tengah menyusun data mengikut kategori..."):
         leads, repeats, ralat = proses_data_crm()
+        
         if ralat:
             st.error(f"❌ Ralat Sistem: {ralat}")
         else:
-            tab1, tab2 = st.tabs(["🎯 1. Senarai Lead Baru", "🛒 2. Database Re-Order"])
+            # Tab utama: Lead vs Repeat
+            tab_lead, tab_repeat = st.tabs(["🎯 1. Senarai Lead Baru", "🛒 2. Database Re-Order"])
             
-            with tab1:
-                if not leads: st.write("Tiada lead baru.")
-                else:
-                    for lead in leads:
-                        if st.session_state["role"] != "admin" and lead['pic'].lower() != st.session_state["nama_penuh"].lower(): continue
-                        st.markdown(f"### 👤 {lead['nama']} (PIC: {lead['pic']})")
-                        st.write(f"📱 Telefon: {lead['telefon']} | 📦 SKU: {lead['sku']}")
-                        st.markdown("---")
-            with tab2:
-                if not repeats: st.write("Tiada pelanggan matang hari ini.")
-                else:
-                    for rep in repeats:
-                        if st.session_state["role"] != "admin" and rep['pic'].lower() != st.session_state["nama_penuh"].lower(): continue
-                        st.markdown(f"### 🛒 {rep['nama']} (PIC: {rep['pic']})")
-                        st.write(f"📱 Telefon: {rep['telefon']} | 📦 Jangkaan Habis: {rep['tarikh_stok_habis'].strftime('%d/%m/%Y')}")
-                        st.markdown("---")
+            # Fungsi untuk papar sub-tab kategori dalam setiap tab utama
+            def paparkan_ikut_kategori(data_list, tab_obj):
+                with tab_obj:
+                    if not data_list:
+                        st.info("Tiada data.")
+                        return
+
+                    # Filter ikut PIC (kecuali admin)
+                    if st.session_state["role"] != "admin":
+                        data_list = [d for d in data_list if str(d['pic']).lower() == st.session_state["nama_penuh"].lower()]
+
+                    if not data_list:
+                        st.info("Tiada tugasan untuk anda.")
+                        return
+
+                    # Bahagikan ikut kategori
+                    kategori_list = ["Hegula", "Hegrano", "Hecafe", "Lain-lain"]
+                    tabs = st.tabs(kategori_list)
+                    
+                    for i, kat in enumerate(kategori_list):
+                        with tabs[i]:
+                            data_filter = [d for d in data_list if tentukan_kategori(d['sku']) == kat]
+                            if not data_filter:
+                                st.write(f"Tiada data {kat}.")
+                            else:
+                                for item in data_filter:
+                                    st.markdown(f"### 👤 {item['nama']} (PIC: {item['pic']})")
+                                    info_tambahan = f"| 📦 Jangkaan Habis: {item['tarikh_stok_habis'].strftime('%d/%m/%Y')}" if 'tarikh_stok_habis' in item else ""
+                                    st.write(f"📱 Telefon: {item['telefon']} | 📦 SKU: {item['sku']} {info_tambahan}")
+                                    st.markdown("---")
+
+            # Panggil fungsi untuk kedua-dua tab
+            paparkan_ikut_kategori(leads, tab_lead)
+            paparkan_ikut_kategori(repeats, tab_repeat)
 
 # ==========================================
 # HALAMAN 3: EXSPORT BULK BLASTER (KATEGORI MUTLAK)
