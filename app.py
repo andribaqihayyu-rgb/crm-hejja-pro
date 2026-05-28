@@ -237,12 +237,12 @@ if pilihan_menu == "📝 Borang Jualan Manual":
                     st.error(f"❌ Ralat sistem: {str(e)}")
 
 # ==========================================
-# HALAMAN 2: KAUNTER FOLLOW-UP SKU (DIKEMASKINI)
+# HALAMAN 2: KAUNTER FOLLOW-UP SKU
 # ==========================================
 elif pilihan_menu == "🚨 Kaunter Follow-Up SKU":
     st.title("🚨 Kaunter Semakan Tugasan Follow-Up Harian")
     
-    # 1. Definisi fungsi kategori supaya konsisten
+    # Fungsi pembantu untuk kategori (Letak di atas atau guna yang sedia ada)
     def tentukan_kategori(sku_text):
         s = str(sku_text).lower()
         if "hegula" in s: return "Hegula"
@@ -250,49 +250,49 @@ elif pilihan_menu == "🚨 Kaunter Follow-Up SKU":
         if "hecafe" in s or "coffee" in s or "kopi" in s: return "Hecafe"
         return "Lain-lain"
 
-    with st.spinner("Tengah menyusun data mengikut kategori..."):
+    # Fungsi untuk papar list minimalis
+    def paparkan_ikut_kategori(data_list, tab_obj):
+        with tab_obj:
+            if not data_list:
+                st.info("Tiada data.")
+                return
+
+            # Filter ikut PIC (kecuali admin)
+            if st.session_state["role"] != "admin":
+                data_list = [d for d in data_list if str(d['pic']).lower() == st.session_state["nama_penuh"].lower()]
+
+            if not data_list:
+                st.info("Tiada tugasan untuk anda.")
+                return
+
+            kategori_list = ["Hegula", "Hegrano", "Hecafe", "Lain-lain"]
+            tabs = st.tabs(kategori_list)
+            
+            for i, kat in enumerate(kategori_list):
+                with tabs[i]:
+                    data_filter = [d for d in data_list if tentukan_kategori(d['sku']) == kat]
+                    
+                    if not data_filter:
+                        st.write(f"Tiada data {kat}.")
+                    else:
+                        df = pd.DataFrame(data_filter)
+                        # Pilih column untuk paparan
+                        cols = ['nama', 'telefon', 'sku']
+                        if 'tarikh_stok_habis' in df.columns:
+                            cols.append('tarikh_stok_habis')
+                        
+                        st.dataframe(df[cols], use_container_width=True, hide_index=True)
+                        st.write(f"📊 Jumlah {kat}: **{len(data_filter)} pelanggan**")
+
+    # Logik utama halaman
+    with st.spinner("Tengah menarik data terkini..."):
         leads, repeats, ralat = proses_data_crm()
-        
         if ralat:
             st.error(f"❌ Ralat Sistem: {ralat}")
         else:
-            # Tab utama: Lead vs Repeat
-            tab_lead, tab_repeat = st.tabs(["🎯 1. Senarai Lead Baru", "🛒 2. Database Re-Order"])
-            
-            # Fungsi untuk papar sub-tab kategori dalam setiap tab utama
-            def paparkan_ikut_kategori(data_list, tab_obj):
-                with tab_obj:
-                    if not data_list:
-                        st.info("Tiada data.")
-                        return
-
-                    # Filter ikut PIC (kecuali admin)
-                    if st.session_state["role"] != "admin":
-                        data_list = [d for d in data_list if str(d['pic']).lower() == st.session_state["nama_penuh"].lower()]
-
-                    if not data_list:
-                        st.info("Tiada tugasan untuk anda.")
-                        return
-
-                    # Bahagikan ikut kategori
-                    kategori_list = ["Hegula", "Hegrano", "Hecafe", "Lain-lain"]
-                    tabs = st.tabs(kategori_list)
-                    
-                    for i, kat in enumerate(kategori_list):
-                        with tabs[i]:
-                            data_filter = [d for d in data_list if tentukan_kategori(d['sku']) == kat]
-                            if not data_filter:
-                                st.write(f"Tiada data {kat}.")
-                            else:
-                                for item in data_filter:
-                                    st.markdown(f"### 👤 {item['nama']} (PIC: {item['pic']})")
-                                    info_tambahan = f"| 📦 Jangkaan Habis: {item['tarikh_stok_habis'].strftime('%d/%m/%Y')}" if 'tarikh_stok_habis' in item else ""
-                                    st.write(f"📱 Telefon: {item['telefon']} | 📦 SKU: {item['sku']} {info_tambahan}")
-                                    st.markdown("---")
-
-            # Panggil fungsi untuk kedua-dua tab
-            paparkan_ikut_kategori(leads, tab_lead)
-            paparkan_ikut_kategori(repeats, tab_repeat)
+            tab1, tab2 = st.tabs(["🎯 1. Senarai Lead Baru", "🛒 2. Database Re-Order"])
+            paparkan_ikut_kategori(leads, tab1)
+            paparkan_ikut_kategori(repeats, tab2)
 
 # ==========================================
 # HALAMAN 3: EXSPORT BULK BLASTER (KATEGORI MUTLAK)
