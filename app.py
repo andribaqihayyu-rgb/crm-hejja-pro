@@ -266,33 +266,59 @@ elif pilihan_menu == "🚨 Kaunter Follow-Up SKU":
                         st.markdown("---")
 
 # ==========================================
-# HALAMAN 3: EXSPORT BULK BLASTER
+# HALAMAN 3: EXSPORT BULK BLASTER (KATEGORI MUTLAK)
 # ==========================================
 elif pilihan_menu == "🚀 Eksport Bulk Blaster":
     st.title("🚀 Hub Eksport Data Khas WhatsApp Bulk Blaster")
-    with st.spinner("Menyusun senarai..."):
+    
+    with st.spinner("Menyusun senarai mengikut kategori..."):
         leads, repeats, ralat = proses_data_crm()
-        if ralat: st.error(f"❌ Ralat: {ralat}")
+        
+        if ralat: 
+            st.error(f"❌ Ralat: {ralat}")
         else:
             semua_aktif_fu = (leads or []) + (repeats or [])
-            sku_fu_unik = sorted(list(set([str(f['sku']).strip() for f in semua_aktif_fu if f.get('sku')])))
             
-            if not sku_fu_unik:
-                st.success("🎉 Tiada tugasan follow-up hari ini.")
-            else:
-                sku_terpilih = st.selectbox("🎯 Pilih SKU:", sku_fu_unik)
-                rekod_final_blaster = []
-                for f in semua_aktif_fu:
-                    if st.session_state["role"] != "admin" and str(f['pic']).lower() != st.session_state["nama_penuh"].lower(): continue
-                    if str(f['sku']).strip() == sku_terpilih:
-                        rekod_final_blaster.append({
-                            "Nama": f['nama'], "Telefon": f['telefon'], "SKU_Produk": f['sku'], "Jenis": f['jenis_fu'], "PIC": f['pic']
-                        })
-                if rekod_final_blaster:
-                    df_b = pd.DataFrame(rekod_final_blaster)
-                    st.dataframe(df_b.astype(str), use_container_width=True)
-                    st.download_button("📥 MUAT TURUN CSV BLASTER", data=df_b.to_csv(index=False).encode('utf-8'), file_name="blaster.csv", mime="text/csv")
+            # 1. Definisi fungsi kategori (Pastikan ni sama dengan 'dapatkan_config_produk')
+            def tentukan_kategori(sku_text):
+                s = str(sku_text).lower()
+                if "hegula" in s: return "Hegula"
+                if "hegrano" in s: return "Hegrano"
+                if "hecafe" in s or "coffee" in s or "kopi" in s: return "Hecafe"
+                return "Lain-lain"
 
+            # 2. Assign kategori kepada setiap data
+            for f in semua_aktif_fu:
+                f['kategori_produk'] = tentukan_kategori(f['sku'])
+            
+            # 3. Tab pilihan (Lebih senang nampak pecahan)
+            tab_hegula, tab_hegrano, tab_hecafe, tab_lain = st.tabs(["Hegula", "Hegrano", "Hecafe", "Lain-lain"])
+            
+            # Fungsi untuk display tab
+            def display_kategori(kategori_nama, tab_obj):
+                with tab_obj:
+                    data_filter = [f for f in semua_aktif_fu if f['kategori_produk'] == kategori_nama]
+                    
+                    # Filter PIC (kecuali admin)
+                    if st.session_state["role"] != "admin":
+                        data_filter = [f for f in data_filter if str(f['pic']).lower() == st.session_state["nama_penuh"].lower()]
+                    
+                    if not data_filter:
+                        st.info(f"Tiada data untuk {kategori_nama}.")
+                    else:
+                        st.write(f"📊 Jumlah {kategori_nama}: **{len(data_filter)} pelanggan**")
+                        df_b = pd.DataFrame(data_filter)
+                        st.dataframe(df_b[['nama', 'telefon', 'sku', 'jenis_fu', 'pic']], use_container_width=True)
+                        
+                        csv = df_b.to_csv(index=False).encode('utf-8')
+                        st.download_button(f"📥 Download {kategori_nama}.csv", csv, f"blaster_{kategori_nama}.csv", "text/csv")
+
+            # Papar tab
+            display_kategori("Hegula", tab_hegula)
+            display_kategori("Hegrano", tab_hegrano)
+            display_kategori("Hecafe", tab_hecafe)
+            display_kategori("Lain-lain", tab_lain)
+            )
 # ==========================================
 # HALAMAN 4: PETI DATA RALAT
 # ==========================================
