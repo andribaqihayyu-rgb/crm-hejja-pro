@@ -120,6 +120,7 @@ def proses_data_crm():
 
         # ... (di dalam fungsi proses_data_crm)
         
+        # (Bahagian dalam proses_data_crm)
         senarai_feedback = []
         senarai_repeat_order = []
         
@@ -129,7 +130,7 @@ def proses_data_crm():
             pic_val = data_terkini.get('pic') or '-'
             nama_val = data_terkini.get('nama') or data_terkini.get('namapelangan') or 'Pelanggan'
             
-            # --- 1. LOGIK FEEDBACK/PARCEL (Contoh: Beli dalam tempoh 7 hari) ---
+            # --- 1. LOGIK FEEDBACK/PARCEL (<= 7 hari) ---
             if (hari_ini - tarikh_beli).days <= 7:
                 senarai_feedback.append({
                     'nama': nama_val, 'sku': sku_val, 'pic': pic_val, 
@@ -137,7 +138,7 @@ def proses_data_crm():
                     'jenis_fu': 'Feedback/Parcel', '_raw': data_terkini
                 })
             
-            # --- 2. LOGIK REPEAT ORDER (Sedia ada) ---
+            # --- 2. LOGIK REPEAT ORDER ---
             config_produk = dapatkan_config_produk(sku_val)
             tarikh_stok_habis = tarikh_beli + datetime.timedelta(days=config_produk["hari"])
             
@@ -147,14 +148,11 @@ def proses_data_crm():
                     'telefon': tel, 'alamat': data_terkini.get('alamat') or 'Tiada Alamat', 
                     'tarikh_stok_habis': tarikh_stok_habis, 'panggilan_produk': config_produk["panggilan"], 
                     'tarikh_beli_formatted': tarikh_beli.strftime('%d/%m/%Y'),
-                    'jenis_fu': 'Matang (Masa Repeat Order)', '_raw': data_terkini
+                    'jenis_fu': 'Matang (Repeat)', '_raw': data_terkini
                 })
 
-        # PENTING: Return 4 nilai sekarang (tambah senarai_feedback)
         return senarai_lead_baru, senarai_feedback, senarai_repeat_order, None
-    
     except Exception as e:
-        # PENTING: Update return error kepada 4 nilai juga
         return None, None, None, str(e)
 # ==========================================
 # USER AUTHENTICATION
@@ -229,10 +227,10 @@ elif pilihan_menu == "🚨 Kaunter Follow-Up SKU":
 
     # Fungsi untuk papar list minimalis
     def paparkan_ikut_kategori(data_list, tab_obj):
-    with tab_obj:
-        if not data_list:
-            st.info("Tiada data.")
-            return
+        with tab_obj:
+            if not data_list:
+                st.info("Tiada data.")
+                return
 
         # Filter ikut PIC (kecuali admin)
         if st.session_state["role"] != "admin":
@@ -271,12 +269,13 @@ elif pilihan_menu == "🚨 Kaunter Follow-Up SKU":
                     st.write(f"📊 Jumlah {kat}: **{len(data_filter)} pelanggan**")
 
     # Logik utama halaman
-    with st.spinner("Tengah menarik data terkini..."):
-        leads, repeats, ralat = proses_data_crm()
+    with st.spinner("Tengah tarik data..."):
+        # TERIMA 4 NILAI SEKARANG
+        leads, feedback, repeats, ralat = proses_data_crm()
         if ralat:
             st.error(f"❌ Ralat Sistem: {ralat}")
         else:
-            tab1, tab2, tab3 = st.tabs(["🎯 Lead Baru", "📦 Feedback", "🛒 Repeat Order"])
+            tab1, tab2, tab3 = st.tabs(["🎯 1. Lead Baru", "📦 2. Feedback/Parcel", "🛒 3. Repeat Order"])
             
             paparkan_ikut_kategori(leads, tab1)
             paparkan_ikut_kategori(feedback, tab2)
