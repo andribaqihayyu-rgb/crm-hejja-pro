@@ -118,13 +118,26 @@ def proses_data_crm():
                         pemetaan_pembelian_terkini[telefon_val] = cust_cleaned
                         pemetaan_pembelian_terkini[telefon_val]['_tarikh_obj'] = tarikh_beli
 
+        # ... (di dalam fungsi proses_data_crm)
+        
+        senarai_feedback = []
         senarai_repeat_order = []
+        
         for tel, data_terkini in pemetaan_pembelian_terkini.items():
             sku_val = data_terkini.get('sku') or data_terkini.get('produk') or ''
             tarikh_beli = data_terkini['_tarikh_obj']
             pic_val = data_terkini.get('pic') or '-'
             nama_val = data_terkini.get('nama') or data_terkini.get('namapelangan') or 'Pelanggan'
             
+            # --- 1. LOGIK FEEDBACK/PARCEL (Contoh: Beli dalam tempoh 7 hari) ---
+            if (hari_ini - tarikh_beli).days <= 7:
+                senarai_feedback.append({
+                    'nama': nama_val, 'sku': sku_val, 'pic': pic_val, 
+                    'telefon': tel, 'alamat': data_terkini.get('alamat') or 'Tiada Alamat',
+                    'jenis_fu': 'Feedback/Parcel', '_raw': data_terkini
+                })
+            
+            # --- 2. LOGIK REPEAT ORDER (Sedia ada) ---
             config_produk = dapatkan_config_produk(sku_val)
             tarikh_stok_habis = tarikh_beli + datetime.timedelta(days=config_produk["hari"])
             
@@ -136,10 +149,13 @@ def proses_data_crm():
                     'tarikh_beli_formatted': tarikh_beli.strftime('%d/%m/%Y'),
                     'jenis_fu': 'Matang (Masa Repeat Order)', '_raw': data_terkini
                 })
-        return senarai_lead_baru, senarai_repeat_order, None
-    except Exception as e:
-        return None, None, str(e)
 
+        # PENTING: Return 4 nilai sekarang (tambah senarai_feedback)
+        return senarai_lead_baru, senarai_feedback, senarai_repeat_order, None
+    
+    except Exception as e:
+        # PENTING: Update return error kepada 4 nilai juga
+        return None, None, None, str(e)
 # ==========================================
 # USER AUTHENTICATION
 # ==========================================
@@ -201,7 +217,7 @@ if st.sidebar.button("Log Keluar 🚪", use_container_width=True):
 # HALAMAN 1: KAUNTER FOLLOW-UP SKU
 # ==========================================
 elif pilihan_menu == "🚨 Kaunter Follow-Up SKU":
-    st.title("🚨 Kaunter Semakan Tugasan Follow-Up Harian")
+    st.title("🚨 Kaunter Semakan Tugasan Follow-Up")
     
     # Fungsi pembantu untuk kategori (Letak di atas atau guna yang sedia ada)
     def tentukan_kategori(sku_text):
@@ -213,37 +229,46 @@ elif pilihan_menu == "🚨 Kaunter Follow-Up SKU":
 
     # Fungsi untuk papar list minimalis
     def paparkan_ikut_kategori(data_list, tab_obj):
-        with tab_obj:
-            if not data_list:
-                st.info("Tiada data.")
-                return
+    with tab_obj:
+        if not data_list:
+            st.info("Tiada data.")
+            return
 
-            # Filter ikut PIC (kecuali admin)
-            if st.session_state["role"] != "admin":
-                data_list = [d for d in data_list if str(d['pic']).lower() == st.session_state["nama_penuh"].lower()]
+        # Filter ikut PIC (kecuali admin)
+        if st.session_state["role"] != "admin":
+            data_list = [d for d in data_list if str(d['pic']).lower() == st.session_state["nama_penuh"].lower()]
 
-            if not data_list:
-                st.info("Tiada tugasan untuk anda.")
-                return
+        if not data_list:
+            st.info("Tiada tugasan untuk anda.")
+            return
 
-            kategori_list = ["Hegula", "Hegrano", "Hecafe", "Lain-lain"]
-            tabs = st.tabs(kategori_list)
-            
-            for i, kat in enumerate(kategori_list):
-                with tabs[i]:
-                    data_filter = [d for d in data_list if tentukan_kategori(d['sku']) == kat]
+        kategori_list = ["Hegula", "Hegrano", "Hecafe", "Lain-lain"]
+        tabs = st.tabs(kategori_list)
+        
+        for i, kat in enumerate(kategori_list):
+            with tabs[i]:
+                data_filter = [d for d in data_list if tentukan_kategori(d['sku']) == kat]
+                
+                if not data_filter:
+                    st.write(f"Tiada data {kat}.")
+                else:
+                    df = pd.DataFrame(data_filter)
                     
-                    if not data_filter:
-                        st.write(f"Tiada data {kat}.")
-                    else:
-                        df = pd.DataFrame(data_filter)
-                        # Pilih column untuk paparan
-                        cols = ['nama', 'telefon', 'sku']
-                        if 'tarikh_stok_habis' in df.columns:
-                            cols.append('tarikh_stok_habis')
-                        
-                        st.dataframe(df[cols], use_container_width=True, hide_index=True)
-                        st.write(f"📊 Jumlah {kat}: **{len(data_filter)} pelanggan**")
+                    # Logik column dinamik:
+                    # Kita sentiasa tunjuk nama, telefon, sku
+                    cols = ['nama', 'telefon', 'sku']
+                    
+                    # Kalau ada tarikh_stok_habis (Repeat Order), kita tunjuk
+                    if 'tarikh_stok_habis' in df.columns:
+                        cols.append('tarikh_stok_habis')
+                    
+                    # Tambah 'jenis_fu' jika anda mahu lihat beza feedback vs repeat
+                    if 'jenis_fu' in df.columns:
+                        cols.append('jenis_fu')
+                    
+                    # Paparkan dataframe
+                    st.dataframe(df[cols], use_container_width=True, hide_index=True)
+                    st.write(f"📊 Jumlah {kat}: **{len(data_filter)} pelanggan**")
 
     # Logik utama halaman
     with st.spinner("Tengah menarik data terkini..."):
@@ -251,9 +276,11 @@ elif pilihan_menu == "🚨 Kaunter Follow-Up SKU":
         if ralat:
             st.error(f"❌ Ralat Sistem: {ralat}")
         else:
-            tab1, tab2 = st.tabs(["🎯 1. Senarai Lead Baru", "🛒 2. Database Re-Order"])
+            tab1, tab2, tab3 = st.tabs(["🎯 Lead Baru", "📦 Feedback", "🛒 Repeat Order"])
+            
             paparkan_ikut_kategori(leads, tab1)
-            paparkan_ikut_kategori(repeats, tab2)
+            paparkan_ikut_kategori(feedback, tab2)
+            paparkan_ikut_kategori(repeats, tab3)
 
 # ==========================================
 # HALAMAN 2: EXSPORT BULK BLASTER (KATEGORI MUTLAK)
